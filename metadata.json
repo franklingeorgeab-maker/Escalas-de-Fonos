@@ -1,0 +1,6 @@
+{
+  "name": "FonoEscala - Gestão de Escalas e Remanejamento Dinâmico",
+  "description": "Sistema especializado para gestão de escalas, remanejamento dinâmico e substituição ágil de fonoaudiólogos em unidades e empresas, com validação de intervalos legais de 12h e teto de 10h diárias.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
