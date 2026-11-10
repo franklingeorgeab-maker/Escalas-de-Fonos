@@ -1,0 +1,122 @@
+{
+  "entities": {
+    "ShiftEntry": {
+      "title": "ShiftEntry",
+      "description": "Escala de atendimento diário do profissional",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "therapistId": { "type": "string" },
+        "unitId": { "type": "string" },
+        "morningStart": { "type": "string" },
+        "morningEnd": { "type": "string" },
+        "morningUnitId": { "type": "string" },
+        "afternoonStart": { "type": "string" },
+        "afternoonEnd": { "type": "string" },
+        "afternoonUnitId": { "type": "string" },
+        "nightStart": { "type": "string" },
+        "nightEnd": { "type": "string" },
+        "nightUnitId": { "type": "string" },
+        "isCoverage": { "type": "boolean" },
+        "coveringForTherapistId": { "type": "string" },
+        "coverageReason": { "type": "string" },
+        "isTemporary": { "type": "boolean" },
+        "temporaryReason": { "type": "string" },
+        "notes": { "type": "string" },
+        "isVacant": { "type": "boolean" }
+      },
+      "required": ["date", "therapistId"]
+    },
+    "Therapist": {
+      "title": "Therapist",
+      "description": "Profissional de Fonoaudiologia cadastrado",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "crfa": { "type": "string" },
+        "contractHoursPerWeek": { "type": "number" },
+        "defaultUnitId": { "type": "string" },
+        "phone": { "type": "string" },
+        "email": { "type": "string" },
+        "color": { "type": "string" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["name"]
+    },
+    "WorkUnit": {
+      "title": "WorkUnit",
+      "description": "Empresa ou unidade de atendimento ocupacional",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string" },
+        "city": { "type": "string" },
+        "roomsCount": { "type": "number" },
+        "contactPerson": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "required": ["name"]
+    },
+    "Absence": {
+      "title": "Absence",
+      "description": "Registro de férias ou ausência programada",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "therapistId": { "type": "string" },
+        "type": { "type": "string" },
+        "startDate": { "type": "string" },
+        "endDate": { "type": "string" },
+        "reason": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["therapistId", "startDate", "endDate"]
+    },
+    "FixedSchedulePattern": {
+      "title": "FixedSchedulePattern",
+      "description": "Padrão de escala semanal fixa por empresa",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "unitId": { "type": "string" },
+        "weekday": { "type": "number" },
+        "therapistId": { "type": "string" },
+        "morningStart": { "type": "string" },
+        "morningEnd": { "type": "string" },
+        "morningUnitId": { "type": "string" },
+        "afternoonStart": { "type": "string" },
+        "afternoonEnd": { "type": "string" },
+        "afternoonUnitId": { "type": "string" },
+        "nightStart": { "type": "string" },
+        "nightEnd": { "type": "string" },
+        "nightUnitId": { "type": "string" }
+      },
+      "required": ["unitId", "weekday", "therapistId"]
+    }
+  },
+  "firestore": {
+    "/shifts/{shiftId}": {
+      "schema": { "$ref": "#/entities/ShiftEntry" },
+      "description": "Escalas e turnos diários dos profissionais"
+    },
+    "/therapists/{therapistId}": {
+      "schema": { "$ref": "#/entities/Therapist" },
+      "description": "Cadastro de fonoaudiólogos"
+    },
+    "/units/{unitId}": {
+      "schema": { "$ref": "#/entities/WorkUnit" },
+      "description": "Cadastro de empresas e unidades contratantes"
+    },
+    "/absences/{absenceId}": {
+      "schema": { "$ref": "#/entities/Absence" },
+      "description": "Férias e licenças dos profissionais"
+    },
+    "/fixedPatterns/{patternId}": {
+      "schema": { "$ref": "#/entities/FixedSchedulePattern" },
+      "description": "Padrões de escalas fixas por dia da semana"
+    }
+  }
+}

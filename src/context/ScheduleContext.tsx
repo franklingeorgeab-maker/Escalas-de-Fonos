@@ -1,5 +1,13 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import {
+  collection,
+  onSnapshot,
+  setDoc,
+  deleteDoc,
+  doc,
+  getDocs,
+} from 'firebase/firestore';
+import {
   Therapist,
   WorkUnit,
   ShiftEntry,
@@ -15,6 +23,7 @@ import {
   INITIAL_FIXED_PATTERNS,
 } from '../data/mockData';
 import { auditAllSchedules } from '../utils/complianceEngine';
+import { db, testConnection, handleFirestoreError, OperationType } from '../firebase';
 
 interface ScheduleContextType {
   therapists: Therapist[];
@@ -28,22 +37,23 @@ interface ScheduleContextType {
   selectedTherapistFilter: string;
   setSelectedTherapistFilter: (id: string) => void;
   violations: ComplianceViolation[];
-  
+  isDatabaseConnected: boolean;
+
   // Actions
   addShift: (shift: Omit<ShiftEntry, 'id'>) => void;
   updateShift: (id: string, updates: Partial<ShiftEntry>) => void;
   deleteShift: (id: string) => void;
   assignCoverage: (shiftId: string, substituteTherapistId: string, reason: string) => void;
-  
+
   addAbsence: (absence: Omit<Absence, 'id' | 'createdAt'>) => void;
   deleteAbsence: (id: string) => void;
-  
+
   addTherapist: (therapist: Omit<Therapist, 'id'>) => void;
   updateTherapist: (id: string, updates: Partial<Therapist>) => void;
-  
+
   addUnit: (unit: Omit<WorkUnit, 'id'>) => void;
   updateUnit: (id: string, updates: Partial<WorkUnit>) => void;
-  
+
   // Fixed Schedule Patterns per company
   fixedPatterns: FixedSchedulePattern[];
   addFixedPattern: (pattern: Omit<FixedSchedulePattern, 'id'>) => void;
@@ -53,7 +63,7 @@ interface ScheduleContextType {
 
   importShifts: (newShifts: ShiftEntry[]) => void;
   resetToDefaults: () => void;
-  
+
   // Quick Reallocation Modal state
   activeCoverageShift: ShiftEntry | null;
   openCoverageModal: (shift: ShiftEntry) => void;
@@ -62,7 +72,7 @@ interface ScheduleContextType {
 
 const ScheduleContext = createContext<ScheduleContextType | undefined>(undefined);
 
-const STORAGE_KEY_PREFIX = 'fonoescala_v4_turnos_empresas_';
+const STORAGE_KEY_PREFIX = 'fonoescala_v5_firestore_';
 
 export const ScheduleProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [selectedDate, setSelectedDate] = useState<string>(() => {
@@ -71,17 +81,13 @@ export const ScheduleProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [selectedUnitFilter, setSelectedUnitFilter] = useState<string>('all');
   const [selectedTherapistFilter, setSelectedTherapistFilter] = useState<string>('all');
   const [activeCoverageShift, setActiveCoverageShift] = useState<ShiftEntry | null>(null);
+  const [isDatabaseConnected, setIsDatabaseConnected] = useState<boolean>(true);
 
-  // Carregar dados de localStorage com fallback para mocks limpos
+  // Inicializa estado local a partir do cache ou fallback inicial
   const [therapists, setTherapists] = useState<Therapist[]>(() => {
     try {
       const saved = localStorage.getItem(`${STORAGE_KEY_PREFIX}therapists`);
-      const list = saved ? JSON.parse(saved) : INITIAL_THERAPISTS;
-      return list.map((t: Therapist) => ({
-        ...t,
-        name: t.name.replace(/^(Dr\.|Dra\.)\s*/i, ''),
-        crfa: '',
-      }));
+      return saved ? JSON.parse(saved) : INITIAL_THERAPISTS;
     } catch {
       return INITIAL_THERAPISTS;
     }
@@ -123,76 +129,200 @@ export const ScheduleProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   });
 
-  // Persistir em localStorage
+  // Teste de conexão no boot conforme diretrizes do Firebase
   useEffect(() => {
-    try {
-      localStorage.setItem(`${STORAGE_KEY_PREFIX}therapists`, JSON.stringify(therapists));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [therapists]);
+    testConnection();
+  }, []);
 
+  // 1. Sincronização em tempo real com Firestore: Therapists
   useEffect(() => {
-    try {
-      localStorage.setItem(`${STORAGE_KEY_PREFIX}units`, JSON.stringify(units));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [units]);
+    const colRef = collection(db, 'therapists');
+    const unsub = onSnapshot(
+      colRef,
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const list = snapshot.docs.map((docSnap) => docSnap.data() as Therapist);
+          setTherapists(list);
+          localStorage.setItem(`${STORAGE_KEY_PREFIX}therapists`, JSON.stringify(list));
+        } else {
+          // Se banco vazio, popula os 8 colaboradores iniciais
+          INITIAL_THERAPISTS.forEach((t) => {
+            setDoc(doc(db, 'therapists', t.id), t).catch((err) =>
+              handleFirestoreError(err, OperationType.WRITE, 'therapists')
+            );
+          });
+        }
+      },
+      (error) => {
+        console.warn('Firestore offline fallback for therapists:', error);
+        setIsDatabaseConnected(false);
+      }
+    );
+    return () => unsub();
+  }, []);
 
+  // 2. Sincronização em tempo real com Firestore: Units (Empresas)
   useEffect(() => {
-    try {
-      localStorage.setItem(`${STORAGE_KEY_PREFIX}shifts`, JSON.stringify(shifts));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [shifts]);
+    const colRef = collection(db, 'units');
+    const unsub = onSnapshot(
+      colRef,
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const list = snapshot.docs.map((docSnap) => docSnap.data() as WorkUnit);
+          setUnits(list);
+          localStorage.setItem(`${STORAGE_KEY_PREFIX}units`, JSON.stringify(list));
+        } else {
+          // Se banco vazio, popula as 9 empresas iniciais
+          INITIAL_UNITS.forEach((u) => {
+            setDoc(doc(db, 'units', u.id), u).catch((err) =>
+              handleFirestoreError(err, OperationType.WRITE, 'units')
+            );
+          });
+        }
+      },
+      (error) => {
+        console.warn('Firestore offline fallback for units:', error);
+        setIsDatabaseConnected(false);
+      }
+    );
+    return () => unsub();
+  }, []);
 
+  // 3. Sincronização em tempo real com Firestore: Shifts (Escalas)
   useEffect(() => {
-    try {
-      localStorage.setItem(`${STORAGE_KEY_PREFIX}absences`, JSON.stringify(absences));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [absences]);
+    const colRef = collection(db, 'shifts');
+    const unsub = onSnapshot(
+      colRef,
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const list = snapshot.docs.map((docSnap) => docSnap.data() as ShiftEntry);
+          setShifts(list);
+          localStorage.setItem(`${STORAGE_KEY_PREFIX}shifts`, JSON.stringify(list));
+        } else {
+          // Se banco vazio, popula escalas iniciais
+          INITIAL_SHIFTS.forEach((s) => {
+            setDoc(doc(db, 'shifts', s.id), s).catch((err) =>
+              handleFirestoreError(err, OperationType.WRITE, 'shifts')
+            );
+          });
+        }
+      },
+      (error) => {
+        console.warn('Firestore offline fallback for shifts:', error);
+        setIsDatabaseConnected(false);
+      }
+    );
+    return () => unsub();
+  }, []);
 
+  // 4. Sincronização em tempo real com Firestore: Absences (Férias)
   useEffect(() => {
-    try {
-      localStorage.setItem(`${STORAGE_KEY_PREFIX}fixedPatterns`, JSON.stringify(fixedPatterns));
-    } catch (e) {
-      console.error(e);
-    }
-  }, [fixedPatterns]);
+    const colRef = collection(db, 'absences');
+    const unsub = onSnapshot(
+      colRef,
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const list = snapshot.docs.map((docSnap) => docSnap.data() as Absence);
+          setAbsences(list);
+          localStorage.setItem(`${STORAGE_KEY_PREFIX}absences`, JSON.stringify(list));
+        } else {
+          INITIAL_ABSENCES.forEach((a) => {
+            setDoc(doc(db, 'absences', a.id), a).catch((err) =>
+              handleFirestoreError(err, OperationType.WRITE, 'absences')
+            );
+          });
+        }
+      },
+      (error) => {
+        console.warn('Firestore offline fallback for absences:', error);
+        setIsDatabaseConnected(false);
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  // 5. Sincronização em tempo real com Firestore: Fixed Patterns (Escalas Fixas)
+  useEffect(() => {
+    const colRef = collection(db, 'fixedPatterns');
+    const unsub = onSnapshot(
+      colRef,
+      (snapshot) => {
+        if (!snapshot.empty) {
+          const list = snapshot.docs.map((docSnap) => docSnap.data() as FixedSchedulePattern);
+          setFixedPatterns(list);
+          localStorage.setItem(`${STORAGE_KEY_PREFIX}fixedPatterns`, JSON.stringify(list));
+        } else {
+          INITIAL_FIXED_PATTERNS.forEach((fp) => {
+            setDoc(doc(db, 'fixedPatterns', fp.id), fp).catch((err) =>
+              handleFirestoreError(err, OperationType.WRITE, 'fixedPatterns')
+            );
+          });
+        }
+      },
+      (error) => {
+        console.warn('Firestore offline fallback for fixedPatterns:', error);
+        setIsDatabaseConnected(false);
+      }
+    );
+    return () => unsub();
+  }, []);
 
   // Auditoria em tempo real
   const violations = useMemo(() => {
     return auditAllSchedules(shifts, therapists, absences);
   }, [shifts, therapists, absences]);
 
-  // Handlers
-  const addShift = (shiftData: Omit<ShiftEntry, 'id'>) => {
+  // Handlers sincronizados com o Firestore
+  const addShift = async (shiftData: Omit<ShiftEntry, 'id'>) => {
     const newShift: ShiftEntry = {
       ...shiftData,
       id: `sh_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     };
     setShifts((prev) => [newShift, ...prev]);
+
+    try {
+      await setDoc(doc(db, 'shifts', newShift.id), newShift);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `shifts/${newShift.id}`);
+    }
   };
 
-  const updateShift = (id: string, updates: Partial<ShiftEntry>) => {
+  const updateShift = async (id: string, updates: Partial<ShiftEntry>) => {
+    let updatedShift: ShiftEntry | null = null;
     setShifts((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, ...updates } : s))
+      prev.map((s) => {
+        if (s.id === id) {
+          updatedShift = { ...s, ...updates };
+          return updatedShift;
+        }
+        return s;
+      })
     );
+
+    if (updatedShift) {
+      try {
+        await setDoc(doc(db, 'shifts', id), updatedShift);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `shifts/${id}`);
+      }
+    }
   };
 
-  const deleteShift = (id: string) => {
+  const deleteShift = async (id: string) => {
     setShifts((prev) => prev.filter((s) => s.id !== id));
+    try {
+      await deleteDoc(doc(db, 'shifts', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `shifts/${id}`);
+    }
   };
 
-  const assignCoverage = (shiftId: string, substituteTherapistId: string, reason: string) => {
+  const assignCoverage = async (shiftId: string, substituteTherapistId: string, reason: string) => {
+    let updatedShift: ShiftEntry | null = null;
     setShifts((prev) =>
       prev.map((s) => {
         if (s.id !== shiftId) return s;
-        return {
+        updatedShift = {
           ...s,
           therapistId: substituteTherapistId,
           isCoverage: true,
@@ -200,12 +330,21 @@ export const ScheduleProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           coverageReason: reason,
           isVacant: false,
         };
+        return updatedShift;
       })
     );
     setActiveCoverageShift(null);
+
+    if (updatedShift) {
+      try {
+        await setDoc(doc(db, 'shifts', shiftId), updatedShift);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `shifts/${shiftId}`);
+      }
+    }
   };
 
-  const addAbsence = (absenceData: Omit<Absence, 'id' | 'createdAt'>) => {
+  const addAbsence = async (absenceData: Omit<Absence, 'id' | 'createdAt'>) => {
     const newAbsence: Absence = {
       ...absenceData,
       id: `abs_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
@@ -213,128 +352,197 @@ export const ScheduleProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
     setAbsences((prev) => [newAbsence, ...prev]);
 
-    // Opcional: marca as escalas do período dessa fonoaudióloga como "isVacant: true"
-    setShifts((prev) =>
-      prev.map((s) => {
-        if (
-          s.therapistId === absenceData.therapistId &&
-          s.date >= absenceData.startDate &&
-          s.date <= absenceData.endDate
-        ) {
-          return {
-            ...s,
-            isVacant: true,
-            notes: `${s.notes ? s.notes + ' | ' : ''}Ausência registrada (${absenceData.type})`,
-          };
-        }
-        return s;
-      })
-    );
+    try {
+      await setDoc(doc(db, 'absences', newAbsence.id), newAbsence);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `absences/${newAbsence.id}`);
+    }
+
+    // Marca as escalas do período dessa fonoaudióloga como "isVacant: true"
+    shifts.forEach((s) => {
+      if (
+        s.therapistId === absenceData.therapistId &&
+        s.date >= absenceData.startDate &&
+        s.date <= absenceData.endDate
+      ) {
+        updateShift(s.id, {
+          isVacant: true,
+          notes: `${s.notes ? s.notes + ' | ' : ''}Ausência registrada (${absenceData.type})`,
+        });
+      }
+    });
   };
 
-  const deleteAbsence = (id: string) => {
+  const deleteAbsence = async (id: string) => {
     setAbsences((prev) => prev.filter((a) => a.id !== id));
+    try {
+      await deleteDoc(doc(db, 'absences', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `absences/${id}`);
+    }
   };
 
-  const addTherapist = (data: Omit<Therapist, 'id'>) => {
+  const addTherapist = async (data: Omit<Therapist, 'id'>) => {
     const newTherapist: Therapist = {
       ...data,
       id: `f_${Date.now()}`,
     };
     setTherapists((prev) => [...prev, newTherapist]);
+
+    try {
+      await setDoc(doc(db, 'therapists', newTherapist.id), newTherapist);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `therapists/${newTherapist.id}`);
+    }
   };
 
-  const updateTherapist = (id: string, updates: Partial<Therapist>) => {
+  const updateTherapist = async (id: string, updates: Partial<Therapist>) => {
+    let updatedItem: Therapist | null = null;
     setTherapists((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, ...updates } : t))
+      prev.map((t) => {
+        if (t.id === id) {
+          updatedItem = { ...t, ...updates };
+          return updatedItem;
+        }
+        return t;
+      })
     );
+
+    if (updatedItem) {
+      try {
+        await setDoc(doc(db, 'therapists', id), updatedItem);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `therapists/${id}`);
+      }
+    }
   };
 
-  const addUnit = (data: Omit<WorkUnit, 'id'>) => {
+  const addUnit = async (data: Omit<WorkUnit, 'id'>) => {
     const newUnit: WorkUnit = {
       ...data,
       id: `u_${Date.now()}`,
     };
     setUnits((prev) => [...prev, newUnit]);
+
+    try {
+      await setDoc(doc(db, 'units', newUnit.id), newUnit);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `units/${newUnit.id}`);
+    }
   };
 
-  const updateUnit = (id: string, updates: Partial<WorkUnit>) => {
+  const updateUnit = async (id: string, updates: Partial<WorkUnit>) => {
+    let updatedItem: WorkUnit | null = null;
     setUnits((prev) =>
-      prev.map((u) => (u.id === id ? { ...u, ...updates } : u))
+      prev.map((u) => {
+        if (u.id === id) {
+          updatedItem = { ...u, ...updates };
+          return updatedItem;
+        }
+        return u;
+      })
     );
+
+    if (updatedItem) {
+      try {
+        await setDoc(doc(db, 'units', id), updatedItem);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `units/${id}`);
+      }
+    }
   };
 
-  const addFixedPattern = (pattern: Omit<FixedSchedulePattern, 'id'>) => {
+  const addFixedPattern = async (pattern: Omit<FixedSchedulePattern, 'id'>) => {
     const newPattern: FixedSchedulePattern = {
       ...pattern,
       id: `fp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
     };
     setFixedPatterns((prev) => [...prev, newPattern]);
+
+    try {
+      await setDoc(doc(db, 'fixedPatterns', newPattern.id), newPattern);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, `fixedPatterns/${newPattern.id}`);
+    }
   };
 
-  const updateFixedPattern = (id: string, updates: Partial<FixedSchedulePattern>) => {
+  const updateFixedPattern = async (id: string, updates: Partial<FixedSchedulePattern>) => {
+    let updatedItem: FixedSchedulePattern | null = null;
     setFixedPatterns((prev) =>
-      prev.map((fp) => (fp.id === id ? { ...fp, ...updates } : fp))
+      prev.map((fp) => {
+        if (fp.id === id) {
+          updatedItem = { ...fp, ...updates };
+          return updatedItem;
+        }
+        return fp;
+      })
     );
+
+    if (updatedItem) {
+      try {
+        await setDoc(doc(db, 'fixedPatterns', id), updatedItem);
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `fixedPatterns/${id}`);
+      }
+    }
   };
 
-  const deleteFixedPattern = (id: string) => {
+  const deleteFixedPattern = async (id: string) => {
     setFixedPatterns((prev) => prev.filter((fp) => fp.id !== id));
+    try {
+      await deleteDoc(doc(db, 'fixedPatterns', id));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `fixedPatterns/${id}`);
+    }
   };
 
   const applyFixedPatternsToWeek = (weekDays: string[]) => {
-    setShifts((prev) => {
-      let updated = [...prev];
+    weekDays.forEach((dateStr, index) => {
+      const weekdayNumber = (index + 1) as 1 | 2 | 3 | 4 | 5; // 1 = Segunda ... 5 = Sexta
+      const dayPatterns = fixedPatterns.filter((fp) => fp.weekday === weekdayNumber);
 
-      weekDays.forEach((dateStr, index) => {
-        const weekdayNumber = (index + 1) as 1 | 2 | 3 | 4 | 5; // 1 = Segunda ... 5 = Sexta
-        const dayPatterns = fixedPatterns.filter((fp) => fp.weekday === weekdayNumber);
+      dayPatterns.forEach((pattern) => {
+        const isVacation = absences.some(
+          (a) =>
+            a.therapistId === pattern.therapistId &&
+            dateStr >= a.startDate &&
+            dateStr <= a.endDate
+        );
 
-        dayPatterns.forEach((pattern) => {
-          const isVacation = absences.some(
-            (a) =>
-              a.therapistId === pattern.therapistId &&
-              dateStr >= a.startDate &&
-              dateStr <= a.endDate
-          );
+        const existingShift = shifts.find(
+          (s) => s.therapistId === pattern.therapistId && s.date === dateStr
+        );
 
-          const existingIndex = updated.findIndex(
-            (s) => s.therapistId === pattern.therapistId && s.date === dateStr
-          );
+        const newShiftData: ShiftEntry = {
+          id: existingShift ? existingShift.id : `sh_${Date.now()}_${pattern.id}_${dateStr}`,
+          date: dateStr,
+          therapistId: pattern.therapistId,
+          unitId: pattern.morningUnitId || pattern.unitId,
+          morningStart: pattern.morningStart,
+          morningEnd: pattern.morningEnd,
+          morningUnitId: pattern.morningUnitId || pattern.unitId,
+          afternoonStart: pattern.afternoonStart,
+          afternoonEnd: pattern.afternoonEnd,
+          afternoonUnitId: pattern.afternoonUnitId || pattern.unitId,
+          nightStart: pattern.nightStart,
+          nightEnd: pattern.nightEnd,
+          nightUnitId: pattern.nightUnitId || pattern.unitId,
+          isCoverage: false,
+          isVacant: isVacation,
+          notes: isVacation ? 'Férias (Vaga Aberta)' : 'Escala fixa aplicada',
+        };
 
-          const newShiftData: ShiftEntry = {
-            id: existingIndex >= 0 ? updated[existingIndex].id : `sh_${Date.now()}_${pattern.id}_${dateStr}`,
-            date: dateStr,
-            therapistId: pattern.therapistId,
-            unitId: pattern.morningUnitId || pattern.unitId,
-            morningStart: pattern.morningStart,
-            morningEnd: pattern.morningEnd,
-            morningUnitId: pattern.morningUnitId || pattern.unitId,
-            afternoonStart: pattern.afternoonStart,
-            afternoonEnd: pattern.afternoonEnd,
-            afternoonUnitId: pattern.afternoonUnitId || pattern.unitId,
-            nightStart: pattern.nightStart,
-            nightEnd: pattern.nightEnd,
-            nightUnitId: pattern.nightUnitId || pattern.unitId,
-            isCoverage: false,
-            isVacant: isVacation,
-            notes: isVacation ? 'Férias (Vaga Aberta)' : 'Escala fixa aplicada',
-          };
-
-          if (existingIndex >= 0) {
-            updated[existingIndex] = newShiftData;
-          } else {
-            updated.push(newShiftData);
-          }
-        });
+        if (existingShift) {
+          updateShift(existingShift.id, newShiftData);
+        } else {
+          addShift(newShiftData);
+        }
       });
-
-      return updated;
     });
   };
 
   const importShifts = (newShifts: ShiftEntry[]) => {
-    setShifts((prev) => [...newShifts, ...prev]);
+    newShifts.forEach((s) => addShift(s));
   };
 
   const resetToDefaults = () => {
@@ -371,6 +579,7 @@ export const ScheduleProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         selectedTherapistFilter,
         setSelectedTherapistFilter,
         violations,
+        isDatabaseConnected,
         addShift,
         updateShift,
         deleteShift,
